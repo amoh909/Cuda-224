@@ -14,36 +14,44 @@ __global__ void mm_tiled_kernel(float *A, float *B, float *C, unsigned int M, un
     unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
     unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (row < M && col < K)
-    {
-        float sum = 0.0f;
-        for (unsigned int tile = 0; tile < (N + TILE_DIM - 1) / TILE_DIM; ++tile)
-        {
-            if (tile * TILE_DIM + threadIdx.x < N)
-            {
-                A_s[threadIdx.y][threadIdx.x] = A[row * N + tile * TILE_DIM + threadIdx.x];
-            }
-            else
-            {
-                A_s[threadIdx.y][threadIdx.x] = 0;
-            }
-            if (tile * TILE_DIM + threadIdx.y < N)
-            {
-                B_s[threadIdx.y][threadIdx.x] = B[(tile * TILE_DIM + threadIdx.y) * K + col];
-            }
-            else
-            {
-                B_s[threadIdx.y][threadIdx.x] = 0;
-            }
-            __syncthreads();
+    float sum = 0.0f;
 
-            for (unsigned int i = 0; i < TILE_DIM; ++i)
-            {
-                    sum += A_s[threadIdx.y][i] * B_s[i][threadIdx.x];
-            }
-            __syncthreads();
+    for (unsigned int tile = 0; tile < (K + TILE_DIM - 1) / TILE_DIM; ++tile)
+    {
+        // Load tile to shared memory
+        unsigned int A_col = tile * TILE_DIM + threadIdx.x;
+        unsigned int B_row = tile * TILE_DIM + threadIdx.y;
+        if (row < M && A_col < K)
+        {
+            A_s[threadIdx.y][threadIdx.x] = A[row * K + A_col];
         }
-        C[row * K + col] = sum;
+        else
+        {
+            A_s[threadIdx.y][threadIdx.x] = 0.0f;
+        }
+        if (B_row < K && col < N)
+        {
+            B_s[threadIdx.y][threadIdx.x] = B[B_row * N + col];
+        }
+        else
+        {
+            B_s[threadIdx.y][threadIdx.x] = 0.0f;
+        }
+
+        __syncthreads();
+
+        // Compute with tile
+        for (unsigned int i = 0; i < TILE_DIM; ++i)
+        {
+            sum += A_s[threadIdx.y][i] * B_s[i][threadIdx.x];
+        }
+
+        __syncthreads();
+    }
+
+    if (row < M && col < N)
+    {
+        C[row * N + col] = sum;
     }
 }
 
@@ -62,9 +70,9 @@ void mm_gpu(float *A, float *B, float *C, unsigned int M, unsigned int N, unsign
     float *A_d;
     float *B_d;
     float *C_d;
-    cudaMalloc((void **)&A_d, M * N * sizeof(float));
-    cudaMalloc((void **)&B_d, N * K * sizeof(float));
-    cudaMalloc((void **)&C_d, M * K * sizeof(float));
+    cudaMalloc((void **)&A_d, M * K * sizeof(float));
+    cudaMalloc((void **)&B_d, K * N * sizeof(float));
+    cudaMalloc((void **)&C_d, M * N * sizeof(float));
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -75,8 +83,8 @@ void mm_gpu(float *A, float *B, float *C, unsigned int M, unsigned int N, unsign
     cudaEventRecord(start);
 
     // TODO
-    cudaMemcpy(A_d, A, M * N * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(B_d, B, N * K * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(A_d, A, M * K * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(B_d, B, K * N * sizeof(float), cudaMemcpyHostToDevice);
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -88,7 +96,7 @@ void mm_gpu(float *A, float *B, float *C, unsigned int M, unsigned int N, unsign
 
     // TODO
     dim3 numThreadsPerBlock(TILE_DIM, TILE_DIM);
-    dim3 numBlocks((K + numThreadsPerBlock.x - 1) / numThreadsPerBlock.x,
+    dim3 numBlocks((N + numThreadsPerBlock.x - 1) / numThreadsPerBlock.x,
                    (M + numThreadsPerBlock.y - 1) / numThreadsPerBlock.y);
     mm_tiled_kernel<<<numBlocks, numThreadsPerBlock>>>(A_d, B_d, C_d, M, N, K);
 
@@ -101,7 +109,7 @@ void mm_gpu(float *A, float *B, float *C, unsigned int M, unsigned int N, unsign
     cudaEventRecord(start);
 
     // TODO
-    cudaMemcpy(C, C_d, M * K * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(C, C_d, M * N * sizeof(float), cudaMemcpyDeviceToHost);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsedTime, start, stop);
